@@ -69,6 +69,21 @@ list_songs() {
   done < <(mpc playlist -f "%position% %id% %file%" | awk '/https?:\/\//') | tac
 }
 
+# Replace url with updated value in same position
+replace_url() {
+  pos="$1"
+  url="$2"
+
+  # Add new url to end of playlist
+  mpc add "$url"
+
+  # Remove expired song from playlist by position
+  mpc del $pos
+
+  # Move the newly added song from the bottom back to original position
+  mpc move $(mpc playlist -f "%position%" | tail -n1) $pos
+}
+
 # Get current http status code and content-type from url, return true if expired (or otherwise invalid) for streaming
 is_invalid() {
   url="$1"
@@ -140,12 +155,12 @@ update() {
   # Loop each http song playlist
   while read -r pos id url src; do
     echo "url: $url"
+    prev_url="$url"
     
     # Check if the url has expired
     if is_invalid "$url"; then
 
       # Fetch new url from src with forced flush
-      prev_url="$url"
       url="$(fetch_url $src flush)"
 
       if [[ "$url" == "$prev_url" ]]; then
@@ -153,24 +168,27 @@ update() {
         set_tag $id invalid
 
       else
-        echo "-> url fail, retry: $url"
-
         # Try again with new url
-        if is_invalid "$url"; then
-          echo "-> url retry fail"
-          set_tag $id invalid
+        echo "-> url fail, retry: $url"
+        replace_url "$pos" "$url"
+      fi
 
+    elif [[ "$flush" == "flush" ]]; then
+      echo "-> url pass, checking for updates anyway"
+
+      # Fetch new url from src with forced flush
+      url="$(fetch_url $src flush)"
+
+      if [[ "$url" == "$prev_url" ]]; then
+        echo "-> url no change"
+
+      # Try again with new url
+      else
+        if [[ "$id" == "$(mpc -f "%id%" | head -n1)" ]]; then
+          echo "-> skipping url change for currently playing track"
         else
-          echo "-> url retry pass"
-
-          # Add new url to end of playlist
-          mpc add "$url"
-
-          # Remove expired song from playlist by position
-          mpc del $pos
-
-          # Move the newly added song from the bottom back to original position
-          mpc move $(mpc playlist -f "%position%" | tail -n1) $pos
+          echo "-> replacing url: $url"
+          replace_url "$pos" "$url"
         fi
       fi
 
