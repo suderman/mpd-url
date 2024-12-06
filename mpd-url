@@ -28,7 +28,7 @@ alias mpc="mpc --host $mpd_host --port $mpd_port"
 # Save result and return cached value if available
 fetch_url() {
   src="$1"
-  flush="${2-false}" # flush cache for this src, always fetch fresh
+  flush="${2-noflush}" # flush cache for this src, always fetch fresh
   file="url_$(echo "$src" | sha256sum | awk '{print $1}')"
   if [[ ! -e $dir/$file || "$flush" == "flush" ]]; then
     echo "$(yt-dlp -g --audio-format=best $src | tail -n1)#${src}" > $dir/$file
@@ -40,7 +40,7 @@ fetch_url() {
 # Save result and return cached value if available
 fetch_tag() {
   src="$1"
-  flush="${2-false}" # flush cache for this src, always fetch fresh
+  flush="${2-noflush}" # flush cache for this src, always fetch fresh
   file="tag_$(echo "$src" | sha256sum | awk '{print $1}')"
   if [[ ! -e $dir/$file || "$flush" == "flush" ]]; then
     yt-dlp -j $src | jq -r '.title, .uploader' > $dir/$file
@@ -51,25 +51,27 @@ fetch_tag() {
 # First line of cache
 fetch_title() {
   src="$1"
-  flush="${2-false}"
+  flush="${2-noflush}"
   clean_tag "$(fetch_tag "$src" "$flush" | head -n1)"
 }
 
 # Second line of cache
 fetch_uploader() {
   src="$1"
-  flush="${2-false}"
+  flush="${2-noflush}"
   clean_tag "$(fetch_tag "$src" "$flush" | tail -n1)"
 }
 
 # Song id from currently playing track (empty if not playing)
 playing_id() {
-  mpc status | awk "NR==2 && /\[playing\]/ {print "$(mpc -f "%id%" | head -n1)"}"
+  if [[ "$(mpc status | awk 'NR==2 && /\[playing\]/ {print "playing"}')" == "playing" ]]; then
+    mpc -f "%id%" | head -n1
+  fi
 }
 
-# Hash value of playlist used to detect changes
+# Hash value of urls in playlist used to detect changes
 playlist_hash() {
-  mpc playlist -f "%file%" | sort | sha256sum
+  mpc playlist -f "%file%" | awk '/https?:\/\//' | sort | sha256sum
 }
 
 # Fetch reversed songs in playlist with #http fragment, added to each line as src
@@ -148,7 +150,7 @@ set_tag() {
 
 # Update the playlist, replacing any expired URLs and tagging tracks
 update() {
-  flush="${1-false}"
+  flush="${1-noflush}"
 
   # Only allow one instance of this function to run at a time
   if [[ -e "$dir/lock" ]]; then
@@ -162,7 +164,7 @@ update() {
     return
   fi
 
-  # Force playlistl update
+  # Force playlist update
   if [[ "$flush" == "flush" ]]; then
     echo "flush" > $dir/playlist
   fi
@@ -184,7 +186,7 @@ update() {
       set_tag "$id" "$src"
 
     elif valid_url "$url"; then
-      echo "-> replace url: $url"
+      echo "-> replace: $url"
       id="$(replace_url "$pos" "$url")"
 
       echo "-> tag: $id $src"
@@ -210,7 +212,8 @@ if [[ "$cmd" == "add" ]]; then
 
 # Empty cache
 elif [[ "$cmd" == "flush" ]]; then
-  rm -f $dir/f*
+  rm -f $dir/tag_*
+  rm -f $dir/url_*
   echo "flush" > $dir/playlist
 
 # Manually run update, with flushed cache and reset playlist hash
@@ -223,8 +226,9 @@ elif [[ "$cmd" == "watch" ]]; then
   # Ensure no lockfile
   rm -f $dir/lock
 
-  # Run update flushed
+  # Run update and write new hash
   update flush
+  playlist_hash > $dir/playlist
 
   # Watch for playlist changes
   echo "watching for playlist changes"
@@ -234,8 +238,8 @@ elif [[ "$cmd" == "watch" ]]; then
       # Get hash of playlist and check for any changes
       if [[ "$(playlist_hash)" != "$(cat $dir/playlist)" ]]; then
 
-        # Run update command and write new hash
-        update
+        # Run update (noflush) and write new hash
+        update noflush
         playlist_hash > $dir/playlist
 
       fi
