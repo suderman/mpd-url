@@ -265,8 +265,11 @@ elif [[ "$cmd" == "watch" ]]; then
 
       # If ids exist, make updates
       if [[ ! -z "$ids" ]]; then
+        echo "-> diff: $ids"
         update noflush "$ids"
         list_ids > $dir/ids
+      else
+        echo "-> no changes"
       fi
 
     done < <(mpc idle playlist)
