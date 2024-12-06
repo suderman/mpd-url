@@ -79,13 +79,17 @@ has_id() {
   local ids="${2-}"
 
   # If $ids is empty, return true (id exists)
-  [[ -z "$ids" ]] && return 0
-
-  # Check if $id exists as a line in $ids
-  if echo "$ids" | grep -Fxq "$id"; then
-    echo true  # id exists
+  if [[ -z "$ids" ]]; then
+    echo true # no ids passed, check all
   else
-    echo false # id does not exist
+
+    # Check if $id exists as a line in $ids
+    if echo "$ids" | grep -Fxq "$id"; then
+      echo true  # id exists
+    else
+      echo false # id does not exist
+    fi
+
   fi
 }
 
@@ -175,19 +179,19 @@ update() {
 
   # Only allow one instance of this function to run at a time
   if [[ -e "$dir/lock" ]]; then
-    echo "locked"
+    echo "[locked]"
     return
   fi
 
   # Ensure online before proceeding
   if ! nc -zw1 youtube.com 443; then
-    echo "offline"
+    echo "[offline]"
     return
   fi
 
   # Force playlist update
   if [[ "$flush" == "flush" ]]; then
-    echo "flush" > $dir/playlist
+    echo "" > $dir/ids
   fi
 
   # Create lockfile
@@ -198,7 +202,7 @@ update() {
 
     # Check if this id should be updated
     if [[ "$(has_id "$id" "$ids")" == "true" ]]; then
-      echo "url: $url"
+      echo "[url] $url"
 
       # Fetch new url from src with forced flush
       url="$(fetch_url $src $flush)"
@@ -226,20 +230,20 @@ update() {
 
   # Remove lockfile when done
   rm -f $dir/lock
-  echo "done"
+  echo "[done]"
 
 }
 
 # If url provided, add the song to the playlist
 if [[ "$cmd" == "add" ]]; then
-  echo "add: $src"
+  echo "[add] $src"
   mpc add "$(fetch_url $src)"
 
 # Empty cache
 elif [[ "$cmd" == "flush" ]]; then
   rm -f $dir/tag_*
   rm -f $dir/url_*
-  echo "flush" > $dir/playlist
+  echo "" > $dir/ids
 
 # Manually run update, with flushed cache and reset playlist ids
 elif [[ "$cmd" == "update" ]]; then
