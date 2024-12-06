@@ -261,7 +261,7 @@ elif [[ "$cmd" == "watch" ]]; then
     while read; do
 
       # Get diff of playlist ids and check for any changes
-      ids="$(list_ids | diff $dir/ids - | awk '/^>/ {print $2}')"
+      ids="$(list_ids | diff $dir/ids - | awk '/^>/ {print $2}' || true)"
 
       # If ids exist, make updates
       if [[ ! -z "$ids" ]]; then
