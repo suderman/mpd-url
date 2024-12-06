@@ -83,9 +83,9 @@ has_id() {
 
   # Check if $id exists as a line in $ids
   if echo "$ids" | grep -Fxq "$id"; then
-    return 0  # id exists
+    echo true  # id exists
   else
-    return 1  # id does not exist
+    echo false # id does not exist
   fi
 }
 
@@ -131,9 +131,9 @@ valid_url() {
   content_type="$(cat $dir/headers | tail -n1)"
   [[ -z "$content_type" ]] && content_type="text" # default to text if blank
   if [[ "$status_code" == "200" && ! "$content_type" =~ ^text ]]; then
-    return 0 # true, is valid
+    echo true  # is valid
   else
-    return 1 # false, is invalid or expired
+    echo false # is invalid or expired
   fi
 }
 
@@ -197,7 +197,7 @@ update() {
   while read -r pos id url src; do
 
     # Check if this id should be updated
-    if has_id "$id" "$ids"; then
+    if [[ "$(has_id "$id" "$ids")" == "true" ]]; then
       echo "url: $url"
 
       # Fetch new url from src with forced flush
@@ -209,7 +209,7 @@ update() {
         echo "-> tag: $id $src"
         set_tag "$id" "$src"
 
-      elif valid_url "$url"; then
+      elif [[ "$(valid_url "$url")" == "true" ]]; then
         echo "-> replace: $url"
         id="$(replace_url "$pos" "$url")"
 
