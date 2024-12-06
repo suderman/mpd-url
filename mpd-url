@@ -24,17 +24,26 @@ mkdir -p $dir
 # Create mpc alias
 alias mpc="mpc --host $mpd_host --port $mpd_port"
 
-# Use yt-dlp to fetch title, artist and url from src
+# Use yt-dlp to fetch url and append src to end as #fragment
 # Save result and return cached value if available
-fetch() {
+fetch_url() {
   src="$1"
   flush="${2-false}" # flush cache for this src, always fetch fresh
-  file="f$(echo "$src" | sha256sum | awk '{print $1}')"
+  file="url_$(echo "$src" | sha256sum | awk '{print $1}')"
   if [[ ! -e $dir/$file || "$flush" == "flush" ]]; then
-    # fetch metadata on first two lines
+    echo "$(yt-dlp -g --audio-format=best $src | tail -n1)#${src}" > $dir/$file
+  fi
+  cat $dir/$file
+}
+
+# Use yt-dlp to fetch metadata on two lines
+# Save result and return cached value if available
+fetch_tag() {
+  src="$1"
+  flush="${2-false}" # flush cache for this src, always fetch fresh
+  file="tag_$(echo "$src" | sha256sum | awk '{print $1}')"
+  if [[ ! -e $dir/$file || "$flush" == "flush" ]]; then
     yt-dlp -j $src | jq -r '.title, .uploader' > $dir/$file
-    # fetch url on last line and append src to end as #fragment
-    echo "$(yt-dlp -g --audio-format=best $src | tail -n1)#${src}" >> $dir/$file
   fi
   cat $dir/$file
 }
@@ -43,21 +52,24 @@ fetch() {
 fetch_title() {
   src="$1"
   flush="${2-false}"
-  clean_tag "$(fetch "$src" "$flush" | head -n1)"
+  clean_tag "$(fetch_tag "$src" "$flush" | head -n1)"
 }
 
 # Second line of cache
 fetch_uploader() {
   src="$1"
   flush="${2-false}"
-  clean_tag "$(fetch "$src" "$flush" | head -n2 | tail -n1)"
+  clean_tag "$(fetch_tag "$src" "$flush" | tail -n1)"
 }
 
-# Last line of cache
-fetch_url() {
-  src="$1"
-  flush="${2-false}"
-  fetch "$src" "$flush" | tail -n1
+# Song id from currently playing track (empty if not playing)
+playing_id() {
+  mpc status | awk "NR==2 && /\[playing\]/ {print "$(mpc -f "%id%" | head -n1)"}"
+}
+
+# Hash value of playlist used to detect changes
+playlist_hash() {
+  mpc playlist -f "%file%" | sort | sha256sum
 }
 
 # Fetch reversed songs in playlist with #http fragment, added to each line as src
@@ -77,24 +89,30 @@ replace_url() {
   # Add new url to end of playlist
   mpc add "$url"
 
+  # Get new song id
+  id="$(mpc playlist -f "%id%" | tail -n1)"
+
   # Remove expired song from playlist by position
   mpc del $pos
 
   # Move the newly added song from the bottom back to original position
   mpc move $(mpc playlist -f "%position%" | tail -n1) $pos
+
+  # Echo new song id for replaced url
+  echo $id
 }
 
-# Get current http status code and content-type from url, return true if expired (or otherwise invalid) for streaming
-is_invalid() {
+# Get current http status code and content-type from url, return false if expired (or otherwise invalid) for streaming
+valid_url() {
   url="$1"
   curl -sILw "__ %{http_code}\n__ %{content_type}\n" "$url" | awk 'tolower($0) ~ /^__/ {print $2}' > $dir/headers
   status_code="$(cat $dir/headers | head -n1)"
   content_type="$(cat $dir/headers | tail -n1)"
   [[ -z "$content_type" ]] && content_type="text" # default to text if blank
   if [[ "$status_code" == "200" && ! "$content_type" =~ ^text ]]; then
-    return 1 # false, it did not expire
+    return 0 # true, is valid
   else
-    return 0 # true, is is expired
+    return 1 # false, is invalid or expired
   fi
 }
 
@@ -155,56 +173,28 @@ update() {
   # Loop each http song playlist
   while read -r pos id url src; do
     echo "url: $url"
-    prev_url="$url"
-    
-    # Check if the url has expired
-    if is_invalid "$url"; then
 
-      # Fetch new url from src with forced flush
-      url="$(fetch_url $src flush)"
+    # Fetch new url from src with forced flush
+    url="$(fetch_url $src $flush)"
 
-      if [[ "$url" == "$prev_url" ]]; then
-        echo "-> url fail"
-        set_tag $id invalid
+    if [[ "$id" == "$(playing_id)" ]]; then
+      echo "-> skipping url change for currently playing track"
 
-      else
-        # Try again with new url
-        echo "-> url fail, retry: $url"
-        replace_url "$pos" "$url"
-      fi
+      echo "-> tag: $id $src"
+      set_tag "$id" "$src"
 
-    elif [[ "$flush" == "flush" ]]; then
-      echo "-> url pass, checking for updates anyway"
+    elif valid_url "$url"; then
+      echo "-> replace url: $url"
+      id="$(replace_url "$pos" "$url")"
 
-      # Fetch new url from src with forced flush
-      url="$(fetch_url $src flush)"
-
-      if [[ "$url" == "$prev_url" ]]; then
-        echo "-> url no change"
-
-      # Try again with new url
-      else
-        if [[ "$id" == "$(mpc -f "%id%" | head -n1)" ]]; then
-          echo "-> skipping url change for currently playing track"
-        else
-          echo "-> replacing url: $url"
-          replace_url "$pos" "$url"
-        fi
-      fi
+      echo "-> tag: $id $src"
+      set_tag "$id" "$src"
 
     else
-      echo "-> url pass"
+      echo "-> url fail"
+      set_tag $id invalid
     fi
-
-  done < <(list_songs)
-
-  # Loop each http song playlist again
-  while read -r pos id url src; do
-
-    # Set metadata for each track
-    echo "tag: $id -> $src"
-    set_tag $id $src
-
+      
   done < <(list_songs)
 
   # Remove lockfile when done
@@ -242,12 +232,11 @@ elif [[ "$cmd" == "watch" ]]; then
     while read; do
 
       # Get hash of playlist and check for any changes
-      hash="$(mpc playlist -f "%file%" | sort | sha256sum)"
-      if [[ "$hash" != "$(cat $dir/playlist)" ]]; then
+      if [[ "$(playlist_hash)" != "$(cat $dir/playlist)" ]]; then
 
-        # Update hash and run this script with "update" command
-        echo "$hash" > $dir/playlist
+        # Run update command and write new hash
         update
+        playlist_hash > $dir/playlist
 
       fi
 
