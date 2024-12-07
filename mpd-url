@@ -29,9 +29,18 @@ alias mpc="mpc --host $mpd_host --port $mpd_port"
 fetch_url() {
   local src="$1"
   local flush="${2-noflush}" # flush cache for this src, always fetch fresh
+
+  # Check for cache unless flush argument set
   local file="url_$(echo "$src" | sha256sum | awk '{print $1}')"
   if [[ ! -e $dir/$file || "$flush" == "flush" ]]; then
-    echo "$(yt-dlp -g --audio-format=best $src | tail -n1)#${src}" > $dir/$file
+
+    # Default bestaudio format (YouTube), but Rumble lacks audio streams and needs worst video    
+    local format="bestaudio"
+    [[ $src == *rumble.com* ]] && format="worst"
+
+    # Same last URL (if multiple provided) to file
+    echo "$(yt-dlp -gf $format $src | tail -n1)#${src}" > $dir/$file
+
   fi
   cat $dir/$file
 }
